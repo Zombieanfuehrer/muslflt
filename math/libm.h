@@ -271,4 +271,23 @@ hidden double __math_invalid(double);
 hidden long double __math_invalidl(long double);
 #endif
 
+/* fpclassify functions */
+hidden int __fpclassify(double);
+hidden int __fpclassifyf(float);
+hidden int __fpclassifyl(long double);
+
+/* exp10 functions */
+double exp10(double);
+float exp10f(float);
+long double exp10l(long double);
+
+/* sincos functions */
+void sincos(double, double *, double *);
+void sincosf(float, float *, float *);
+void sincosl(long double, long double *, long double *);
+
+/* weak_alias macro for QNX */
+#define weak_alias(old, new) \
+	extern __typeof(old) new __attribute__((weak, alias(#old)))
+
 #endif
