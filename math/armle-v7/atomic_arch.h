@@ -1,8 +1,21 @@
+#include "libc.h"
+
+#if __ARM_ARCH_4__ || __ARM_ARCH_4T__ || __ARM_ARCH == 4
+#define BLX "mov lr,pc\n\tbx"
+#else
+#define BLX "blx"
+#endif
+
+extern hidden uintptr_t __a_cas_ptr, __a_barrier_ptr;
+
+#if ((__ARM_ARCH_6__ || __ARM_ARCH_6K__ || __ARM_ARCH_6KZ__ || __ARM_ARCH_6ZK__) && !__thumb__) \
+ || __ARM_ARCH_6T2__ || __ARM_ARCH_7A__ || __ARM_ARCH_7R__ || __ARM_ARCH >= 7
+
 #define a_ll a_ll
 static inline int a_ll(volatile int *p)
 {
 	int v;
-	__asm__ __volatile__ ("ldaxr %w0,%1" : "=r"(v) : "Q"(*p));
+	__asm__ __volatile__ ("ldrex %0, %1" : "=r"(v) : "Q"(*p));
 	return v;
 }
 
@@ -10,9 +23,11 @@ static inline int a_ll(volatile int *p)
 static inline int a_sc(volatile int *p, int v)
 {
 	int r;
-	__asm__ __volatile__ ("stlxr %w0,%w2,%1" : "=&r"(r), "=Q"(*p) : "r"(v) : "memory");
+	__asm__ __volatile__ ("strex %0,%2,%1" : "=&r"(r), "=Q"(*p) : "r"(v) : "memory");
 	return !r;
 }
+
+#if __ARM_ARCH_7A__ || __ARM_ARCH_7R__ ||  __ARM_ARCH >= 7
 
 #define a_barrier a_barrier
 static inline void a_barrier()
@@ -20,63 +35,73 @@ static inline void a_barrier()
 	__asm__ __volatile__ ("dmb ish" : : : "memory");
 }
 
+#endif
+
+#define a_pre_llsc a_barrier
+#define a_post_llsc a_barrier
+
+#else
+
 #define a_cas a_cas
 static inline int a_cas(volatile int *p, int t, int s)
 {
-	int old;
-	do {
-		old = a_ll(p);
-		if (old != t) {
-			a_barrier();
-			break;
-		}
-	} while (!a_sc(p, s));
-	return old;
+	for (;;) {
+		register int r0 __asm__("r0") = t;
+		register int r1 __asm__("r1") = s;
+		register volatile int *r2 __asm__("r2") = p;
+		register uintptr_t r3 __asm__("r3") = __a_cas_ptr;
+		int old;
+		__asm__ __volatile__ (
+			BLX " r3"
+			: "+r"(r0), "+r"(r3) : "r"(r1), "r"(r2)
+			: "memory", "lr", "ip", "cc" );
+		if (!r0) return t;
+		if ((old=*p)!=t) return old;
+	}
 }
 
-#define a_ll_p a_ll_p
-static inline void *a_ll_p(volatile void *p)
+#endif
+
+#ifndef a_barrier
+#define a_barrier a_barrier
+static inline void a_barrier()
 {
-	void *v;
-	__asm__ __volatile__ ("ldaxr %0, %1" : "=r"(v) : "Q"(*(void *volatile *)p));
-	return v;
+	register uintptr_t ip __asm__("ip") = __a_barrier_ptr;
+	__asm__ __volatile__( BLX " ip" : "+r"(ip) : : "memory", "cc", "lr" );
+}
+#endif
+
+#define a_crash a_crash
+static inline void a_crash()
+{
+	__asm__ __volatile__(
+#ifndef __thumb__
+		".word 0xe7f000f0"
+#else
+		".short 0xdeff"
+#endif
+		: : : "memory");
 }
 
-#define a_sc_p a_sc_p
-static inline int a_sc_p(volatile int *p, void *v)
-{
-	int r;
-	__asm__ __volatile__ ("stlxr %w0,%2,%1" : "=&r"(r), "=Q"(*(void *volatile *)p) : "r"(v) : "memory");
-	return !r;
-}
+#if __ARM_ARCH >= 5 && (!__thumb__ || __thumb2__)
 
-#define a_cas_p a_cas_p
-static inline void *a_cas_p(volatile void *p, void *t, void *s)
+#define a_clz_32 a_clz_32
+static inline int a_clz_32(uint32_t x)
 {
-	void *old;
-	do {
-		old = a_ll_p(p);
-		if (old != t) {
-			a_barrier();
-			break;
-		}
-	} while (!a_sc_p(p, s));
-	return old;
-}
-
-#define a_ctz_64 a_ctz_64
-static inline int a_ctz_64(uint64_t x)
-{
-	__asm__(
-		"	rbit %0, %1\n"
-		"	clz %0, %0\n"
-		: "=r"(x) : "r"(x));
+	__asm__ ("clz %0, %1" : "=r"(x) : "r"(x));
 	return x;
 }
 
-#define a_clz_64 a_clz_64
-static inline int a_clz_64(uint64_t x)
+#if __ARM_ARCH_6T2__ || __ARM_ARCH_7A__ || __ARM_ARCH_7R__ || __ARM_ARCH >= 7
+
+#define a_ctz_32 a_ctz_32
+static inline int a_ctz_32(uint32_t x)
 {
-	__asm__("clz %0, %1" : "=r"(x) : "r"(x));
-	return x;
+	uint32_t xr;
+	__asm__ ("rbit %0, %1" : "=r"(xr) : "r"(x));
+	return a_clz_32(xr);
 }
+
+#endif
+
+#endif
